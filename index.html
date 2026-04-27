@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Atividades Domésticas - Google Drive</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js" async defer></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1, h2 {
+            color: #333;
+        }
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #3367d6;
+        }
+        button:disabled {
+            background-color: #ccc;
+        }
+        #categories button {
+            background-color: #34a853;
+        }
+        #categories button:hover {
+            background-color: #2d8e47;
+        }
+        #timer button {
+            background-color: #ea4335;
+        }
+        #timer button:hover {
+            background-color: #c5221f;
+        }
+        input {
+            padding: 10px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            width: 200px;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+        li {
+            background: white;
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+        }
+        li input[type="checkbox"] {
+            margin-right: 10px;
+            transform: scale(1.2);
+        }
+        li button {
+            font-size: 14px;
+            padding: 5px 10px;
+            margin-left: 10px;
+        }
+        #timerDisplay {
+            font-size: 48px;
+            font-weight: bold;
+            color: #4285f4;
+            margin: 20px 0;
+        }
+        .section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #loginSection p {
+            color: #666;
+            font-size: 14px;
+        }
+        #logoutBtn {
+            background-color: #ea4335;
+        }
+    </style>
+</head>
+<body>
+    <div id="loginSection" class="section">
+        <h1>Sistema de Atividades Domésticas</h1>
+        <button id="loginBtn">Login com Google</button>
+        <p>IMPORTANTE: Substitua <code>YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com</code> pelo seu Client ID obtido no <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a>. Crie um projeto, habilite Drive API e crie OAuth 2.0 Client ID (tipo Web application, origins: http://localhost:*, URIs vazios).</p>
+    </div>
+
+    <div id="app" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h1>Sistema de Atividades Domésticas</h1>
+            <button id="logoutBtn" onclick="logout()">Sair</button>
+        </div>
+
+        <div id="categories" class="section">
+            <h2>Categorias</h2>
+            <div>
+                <button onclick="selectCategory('Limpeza')">🧹 Limpeza</button>
+                <button onclick="selectCategory('Cozinha')">🍳 Cozinha</button>
+                <button onclick="selectCategory('Lavanderia')">👕 Lavanderia</button>
+                <button onclick="selectCategory('Quarto')">🛏️ Quarto</button>
+            </div>
+        </div>
+
+        <div id="checklist" class="section" style="display: none;">
+            <h2 id="currentCat">Selecione uma categoria</h2>
+            <input id="newTask" placeholder="Digite uma nova tarefa...">
+            <button onclick="addTask()">Adicionar Tarefa</button>
+            <ul id="taskList"></ul>
+        </div>
+
+        <div id="timer" class="section">
+            <h2>Cronômetro</h2>
+            <div id="timerDisplay">00:00</div>
+            <button id="startBtn" onclick="toggleTimer()">Iniciar</button>
+            <button onclick="resetTimer()">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        const CLIENT_ID = 'https://545483671728-12fnttmlp0fpuv6ej9ge17p0mkufof9f.apps.googleusercontent.com'; // SUBSTITUA AQUI!
+        const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+
+        let tokenClient;
+        let data;
+        let timerInterval;
+        let saveTimeout;
+        const categories = ['Limpeza', 'Cozinha', 'Lavanderia', 'Quarto'];
+
+        const defaultData = {
+            fileId: '',
+            categories: {
+                Limpeza: { tasks: ['Varrer o piso', 'Passar pano úmido'], completed: [false, false] },
+                Cozinha: { tasks: ['Lavar louça', 'Limpar fogão'], completed: [false, false] },
+                Lavanderia: { tasks: ['Lavar roupas', 'Passar'], completed: [false, false] },
+                Quarto: { tasks: ['Arrumar cama', 'Organizar armário'], completed: [false, false] }
+            },
+            timer: { active: false, startTime: 0, elapsed: 0, currentCategory: '', currentTaskIndex: -1 }
+        };
+
+        data = JSON.parse(JSON.stringify(defaultData));
+
+        async function initializeGapi() {
+            return new Promise((resolve, reject) => {
+                gapi.load('client', async () => {
+                    try {
+                        await gapi.client.load('drive', 'v3');
+                        resolve();
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            });
+        }
+
+        async function loadData() {
+            try {
+                const response = await gapi.client.drive.files.list({
+                    q: "name = 'atividades_pablo.json' and trashed = false",
+                    fields: 'files(id, name)'
+                });
+
+                const files = response.result.files;
+                if (files && files.length > 0) {
+                    const fileId = files[0].id;
+                    const fileResponse = await gapi.client.drive.files.get({
+                        fileId: fileId,
+                        alt: 'media'
+                    });
+                    data = JSON.parse(fileResponse.body);
+                    data.fileId = fileId;
+                } else {
+                    data = JSON.parse(JSON.stringify(defaultData));
+                    await saveData(true);
+                }
+                updateUI();
+            } catch (error) {
+                console.error('Erro ao carregar dados:', error);
+                data = JSON.parse(JSON.stringify(defaultData));
+                updateUI();
+            }
+        }
+
+        async function saveData(forceCreate = false) {
+            try {
+                const jsonData = JSON.stringify(data, null, 2);
+                let fileId = data.fileId;
+
+                if (!fileId || forceCreate) {
+                    const metadata = {
+                        name: 'atividades_pablo.json',
+                        parents: ['root']
+                    };
+                    const media = {
+                        mimeType: 'application/json',
+                        body: jsonData
+                    };
+                    const response = await gapi.client.drive.files.create({
+                        resource: metadata,
+                        media: media
+                    });
+                    fileId = response.result.id;
+                    data.fileId = fileId;
+                } else {
+                    await gapi.client.drive.files.update({
+                        fileId: fileId,
+                        media: {
+                            mimeType: 'application/json',
+                            body: jsonData
+                        }
+                    });
+                }
+                console.log('Dados salvos com sucesso!');
+            } catch (error) {
+                console.error('Erro ao salvar dados:', error);
+            }
+        }
+
+        function debounceSave() {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => saveData(), 1500);
+        }
+
+        function selectCategory(cat) {
+            data.timer.currentCategory = cat;
+            document.getElementById('checklist').style.display = 'block';
+            document.getElementById('currentCat').textContent = cat;
+            updateChecklist();
+            debounceSave();
+        }
+
+        function updateChecklist() {
+            const cat = data.timer.currentCategory;
+            if (!cat || !data.categories[cat]) return;
+
+            const ul = document.getElementById('taskList');
+            ul.innerHTML = '';
+
+            const tasks = data.categories[cat].tasks;
+            const completed = data.categories[cat].completed;
+
+            tasks.forEach((task, i) => {
+                const li = document.createElement('li');
+                li.innerHTML = `
+                    <input type="checkbox" ${completed[i] ? 'checked' : ''} onchange="toggleTask(${i})">
+                    <span>${task}</span>
+                    <button onclick="startTask(${i})">⏱️ Timer</button>
+                    <button onclick="removeTask(${i})" style="background-color: #fbbc04;">🗑️</button>
+                `;
+                ul.appendChild(li);
+            });
+        }
+
+        function addTask() {
+            const input = document.getElementById('newTask');
+            const task = input.value.trim();
+            if (!task || !data.timer.currentCategory) return;
+
+            const cat = data.timer.currentCategory;
+            data.categories[cat].tasks.push(task);
+            data.categories[cat].completed.push(false);
+            input.value = '';
+            updateChecklist();
+            debounceSave();
+        }
+
+        function toggleTask(i) {
+            if (!data.timer.currentCategory) return;
+            const cat = data.timer.currentCategory;
+            data.categories[cat].completed[i] = !data.categories[cat].completed[i];
+            debounceSave();
+        }
+
+        function removeTask(i) {
+            if (!data.timer.currentCategory) return;
+            const cat = data.timer.currentCategory;
+            data.categories[cat].tasks.splice(i, 1);
+            data.categories[cat].completed.splice(i, 1);
+            updateChecklist();
+            debounceSave();
+        }
+
+        function startTask(i) {
+            data.timer.currentTaskIndex = i;
+            toggleTimer();
+        }
+
+        function toggleTimer() {
+            const t = data.timer;
+            if (t.active) {
+                clearInterval(timerInterval);
+                t.active = false;
+                t.elapsed += Date.now() - t.startTime;
+                document.getElementById('startBtn').textContent = 'Iniciar';
+                saveData(); // Save on pause
+            } else {
+                t.startTime = Date.now() - t.elapsed;
+                timerInterval = setInterval(updateTimerDisplay, 1000);
+                t.active = true;
+                document.getElementById('startBtn').textContent = 'Pausar';
+            }
+            updateTimerDisplay();
+        }
+
+        function resetTimer() {
+            clearInterval(timerInterval);
+            data.timer.active = false;
+            data.timer.elapsed = 0;
+            data.timer.startTime = 0;
+            document.getElementById('startBtn').textContent = 'Iniciar';
+            updateTimerDisplay();
+            debounceSave();
+        }
+
+        function updateTimerDisplay() {
+            const t = data.timer;
+            let elapsed = t.active ? (Date.now() - t.startTime) : t.elapsed;
+            const mins = Math.floor(elapsed / 60000);
+            const secs = Math.floor((elapsed % 60000) / 1000);
+            document.getElementById('timerDisplay').textContent = 
+                `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function updateUI() {
+            if (data.timer.currentCategory) {
+                selectCategory(data.timer.currentCategory);
+            }
+            updateTimerDisplay();
+        }
+
+        async function login() {
+            try {
+                if (!gapi.client) {
+                    await initializeGapi();
+                }
+
+                if (!tokenClient) {
+                    tokenClient = google.accounts.oauth2.initTokenClient({
+                        client_id: CLIENT_ID,
+                        scope: SCOPES,
+                        callback: (tokenResponse) => {
+                            if (tokenResponse.error !== undefined) {
+                                console.error(tokenResponse);
+                                return;
+                            }
+                            gapi.client.setToken(tokenResponse);
+                            document.getElementById('loginSection').style.display = 'none';
+                            document.getElementById('app').style.display = 'block';
+                            loadData();
+                        },
+                    });
+                }
+                tokenClient.requestAccessToken({ prompt: '' });
+            } catch (error) {
+                console.error('Erro no login:', error);
+            }
+        }
+
+        function logout() {
+            if (tokenClient) {
+                google.accounts.oauth2.revoke(gapi.client.getToken().access_token);
+            }
+            gapi.client.setToken('');
+            document.getElementById('app').style.display = 'none';
+            document.getElementById('loginSection').style.display = 'block';
+            document.getElementById('checklist').style.display = 'none';
+        }
+
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('loginBtn').addEventListener('click', login);
+        });
+    </script>
+</body>
+</html>
